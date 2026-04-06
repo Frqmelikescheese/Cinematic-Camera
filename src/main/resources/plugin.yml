@@ -1,0 +1,22 @@
+name: CinematicCamera
+version: 1.0
+main: dev.isa.frqme.cinematicCamera.CinematicCamera
+api-version: '1.21'
+author: isa
+description: Create cinematic camera paths
+
+commands:
+  cinematicwand:
+    description: Get the cinematic wand
+    usage: /cinematicwand
+    aliases: [cwand, camwand]
+
+  cinematic:
+    description: Manage cinematic paths
+    usage: /cinematic <save|delete|list|play|stop|toggle|clear|reload|setspeed>
+    aliases: [cam, cinema]
+
+permissions:
+  cinematic.admin:
+    description: Admin commands
+    default: op
