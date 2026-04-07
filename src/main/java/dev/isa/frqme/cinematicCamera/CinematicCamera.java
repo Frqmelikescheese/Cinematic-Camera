@@ -8,6 +8,9 @@ import net.kyori.adventure.title.Title;
 import org.bukkit.*;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -25,6 +28,8 @@ import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 import org.jetbrains.annotations.NotNull;
 
+import java.io.File;
+import java.io.IOException;
 import java.time.Duration;
 import java.util.*;
 
@@ -44,13 +49,38 @@ public class CinematicCamera extends JavaPlugin implements Listener {
     // Players waiting for a "click to continue" pause
     private final Set<UUID> awaitingClick = new HashSet<>();
 
+    // Config file for paths
+    private File pathsFile;
+    private FileConfiguration pathsConfig;
+
     // ─────────────────────────────────────────────────
     // Lifecycle
     // ─────────────────────────────────────────────────
     @Override
     public void onEnable() {
         getServer().getPluginManager().registerEvents(this, this);
-        getLogger().info("Cinematic Camera enabled! Now with CAMERA ROTATION & SPEED ZONES!");
+
+        // Create plugin folder if it doesn't exist
+        if (!getDataFolder().exists()) {
+            getDataFolder().mkdirs();
+        }
+
+        // Initialize paths config
+        pathsFile = new File(getDataFolder(), "paths.yml");
+        if (!pathsFile.exists()) {
+            try {
+                pathsFile.createNewFile();
+            } catch (IOException e) {
+                getLogger().severe("Could not create paths.yml!");
+                e.printStackTrace();
+            }
+        }
+        pathsConfig = YamlConfiguration.loadConfiguration(pathsFile);
+
+        // Load paths from config
+        loadPathsFromConfig();
+
+        getLogger().info("Cinematic Camera enabled! Loaded " + paths.size() + " paths from config.");
     }
 
     @Override
@@ -59,7 +89,190 @@ public class CinematicCamera extends JavaPlugin implements Listener {
             Player p = Bukkit.getPlayer(uuid);
             if (p != null) endCinematic(p);
         }
-        getLogger().info("Cinematic Camera disabled!");
+
+        // Save all paths before shutdown
+        savePathsToConfig();
+
+        getLogger().info("Cinematic Camera disabled! Saved " + paths.size() + " paths.");
+    }
+
+    // ─────────────────────────────────────────────────
+    // Config Save/Load
+    // ─────────────────────────────────────────────────
+    private void savePathsToConfig() {
+        pathsConfig = new YamlConfiguration();
+
+        for (Map.Entry<String, CinematicPath> entry : paths.entrySet()) {
+            String pathName = entry.getKey();
+            CinematicPath path = entry.getValue();
+            String basePath = "paths." + pathName;
+
+            // Save basic info
+            pathsConfig.set(basePath + ".speed", path.speed);
+            pathsConfig.set(basePath + ".autoPlay", path.autoPlay);
+            pathsConfig.set(basePath + ".title", path.title);
+            pathsConfig.set(basePath + ".subtitle", path.subtitle);
+
+            // Save waypoints
+            List<Map<String, Object>> waypointsList = new ArrayList<>();
+            for (Location loc : path.waypoints) {
+                Map<String, Object> wpData = new HashMap<>();
+                wpData.put("world", loc.getWorld().getName());
+                wpData.put("x", loc.getX());
+                wpData.put("y", loc.getY());
+                wpData.put("z", loc.getZ());
+                wpData.put("yaw", loc.getYaw());
+                wpData.put("pitch", loc.getPitch());
+                waypointsList.add(wpData);
+            }
+            pathsConfig.set(basePath + ".waypoints", waypointsList);
+
+            // Save keyframes
+            List<Map<String, Object>> keyframesList = new ArrayList<>();
+            for (Keyframe kf : path.keyframes) {
+                Map<String, Object> kfData = new HashMap<>();
+                kfData.put("type", kf.type.name());
+                kfData.put("waypointIndex", kf.waypointIndex);
+                kfData.put("text", kf.text);
+                kfData.put("subText", kf.subText);
+                kfData.put("duration", kf.duration);
+                kfData.put("fadeIn", kf.fadeIn);
+                kfData.put("stay", kf.stay);
+                kfData.put("fadeOut", kf.fadeOut);
+                kfData.put("pitch", kf.pitch);
+                keyframesList.add(kfData);
+            }
+            pathsConfig.set(basePath + ".keyframes", keyframesList);
+
+            // Save speed zones
+            List<Map<String, Object>> zonesList = new ArrayList<>();
+            for (SpeedZone zone : path.speedZones) {
+                Map<String, Object> zoneData = new HashMap<>();
+                zoneData.put("startWaypoint", zone.startWaypoint);
+                zoneData.put("endWaypoint", zone.endWaypoint);
+                zoneData.put("speedMultiplier", zone.speedMultiplier);
+                zonesList.add(zoneData);
+            }
+            pathsConfig.set(basePath + ".speedZones", zonesList);
+        }
+
+        try {
+            pathsConfig.save(pathsFile);
+            getLogger().info("Saved " + paths.size() + " paths to config.");
+        } catch (IOException e) {
+            getLogger().severe("Could not save paths.yml!");
+            e.printStackTrace();
+        }
+    }
+
+    private void loadPathsFromConfig() {
+        paths.clear();
+
+        ConfigurationSection pathsSection = pathsConfig.getConfigurationSection("paths");
+        if (pathsSection == null) {
+            getLogger().info("No paths found in config.");
+            return;
+        }
+
+        for (String pathName : pathsSection.getKeys(false)) {
+            try {
+                String basePath = "paths." + pathName;
+
+                // Load waypoints
+                List<Location> waypoints = new ArrayList<>();
+                List<Map<?, ?>> waypointsList = pathsConfig.getMapList(basePath + ".waypoints");
+
+                for (Map<?, ?> wpData : waypointsList) {
+                    World world = Bukkit.getWorld((String) wpData.get("world"));
+                    if (world == null) {
+                        getLogger().warning("World not found for path " + pathName + ", skipping.");
+                        continue;
+                    }
+
+                    double x = ((Number) wpData.get("x")).doubleValue();
+                    double y = ((Number) wpData.get("y")).doubleValue();
+                    double z = ((Number) wpData.get("z")).doubleValue();
+                    float yaw = ((Number) wpData.get("yaw")).floatValue();
+                    float pitch = ((Number) wpData.get("pitch")).floatValue();
+
+                    Location loc = new Location(world, x, y, z, yaw, pitch);
+                    waypoints.add(loc);
+                }
+
+                if (waypoints.isEmpty()) {
+                    getLogger().warning("No valid waypoints for path " + pathName + ", skipping.");
+                    continue;
+                }
+
+                // Create path
+                double speed = pathsConfig.getDouble(basePath + ".speed", 1.0);
+                boolean autoPlay = pathsConfig.getBoolean(basePath + ".autoPlay", true);
+
+                CinematicPath path = new CinematicPath(pathName, waypoints, autoPlay, speed);
+                path.title = pathsConfig.getString(basePath + ".title", "");
+                path.subtitle = pathsConfig.getString(basePath + ".subtitle", "");
+
+                // Load keyframes
+                List<Map<?, ?>> keyframesList = pathsConfig.getMapList(basePath + ".keyframes");
+                for (Map<?, ?> kfData : keyframesList) {
+                    try {
+                        KeyframeType type = KeyframeType.valueOf((String) kfData.get("type"));
+                        int wpIdx = ((Number) kfData.get("waypointIndex")).intValue();
+
+                        Keyframe kf = new Keyframe(type, wpIdx);
+
+                        // Fixed: Use proper null-checking instead of getOrDefault
+                        Object textObj = kfData.get("text");
+                        kf.text = textObj != null ? (String) textObj : "";
+
+                        Object subTextObj = kfData.get("subText");
+                        kf.subText = subTextObj != null ? (String) subTextObj : "";
+
+                        Object durationObj = kfData.get("duration");
+                        kf.duration = durationObj != null ? ((Number) durationObj).doubleValue() : 0.0;
+
+                        Object fadeInObj = kfData.get("fadeIn");
+                        kf.fadeIn = fadeInObj != null ? ((Number) fadeInObj).intValue() : 10;
+
+                        Object stayObj = kfData.get("stay");
+                        kf.stay = stayObj != null ? ((Number) stayObj).intValue() : 60;
+
+                        Object fadeOutObj = kfData.get("fadeOut");
+                        kf.fadeOut = fadeOutObj != null ? ((Number) fadeOutObj).intValue() : 20;
+
+                        Object pitchObj = kfData.get("pitch");
+                        kf.pitch = pitchObj != null ? ((Number) pitchObj).floatValue() : 1.0f;
+
+                        path.keyframes.add(kf);
+                    } catch (Exception e) {
+                        getLogger().warning("Failed to load keyframe for path " + pathName + ": " + e.getMessage());
+                    }
+                }
+
+                // Load speed zones
+                List<Map<?, ?>> zonesList = pathsConfig.getMapList(basePath + ".speedZones");
+                for (Map<?, ?> zoneData : zonesList) {
+                    try {
+                        int start = ((Number) zoneData.get("startWaypoint")).intValue();
+                        int end = ((Number) zoneData.get("endWaypoint")).intValue();
+                        double zoneSpeed = ((Number) zoneData.get("speedMultiplier")).doubleValue();
+
+                        SpeedZone zone = new SpeedZone(start, end, zoneSpeed);
+                        path.speedZones.add(zone);
+                    } catch (Exception e) {
+                        getLogger().warning("Failed to load speed zone for path " + pathName + ": " + e.getMessage());
+                    }
+                }
+
+                paths.put(pathName, path);
+                getLogger().info("Loaded path: " + pathName + " (" + waypoints.size() + " waypoints, "
+                        + path.keyframes.size() + " keyframes, " + path.speedZones.size() + " zones)");
+
+            } catch (Exception e) {
+                getLogger().warning("Failed to load path " + pathName + ": " + e.getMessage());
+                e.printStackTrace();
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────
@@ -90,7 +303,7 @@ public class CinematicCamera extends JavaPlugin implements Listener {
 
         event.setCancelled(true);
         Action action = event.getAction();
-        Location loc  = player.getLocation().clone(); // NOW INCLUDES PITCH & YAW!
+        Location loc  = player.getLocation().clone();
 
         if (action == Action.LEFT_CLICK_BLOCK || action == Action.LEFT_CLICK_AIR) {
             PathEditor editor = editors.computeIfAbsent(player.getUniqueId(), k -> new PathEditor());
@@ -381,13 +594,13 @@ public class CinematicCamera extends JavaPlugin implements Listener {
         PAUSE_CLICK,
         SOUND,
         PARTICLE_BURST,
-        CAMERA_SHAKE,      // NEW: shake camera
-        FADE_BLACK,        // NEW: fade to black
-        FADE_WHITE,        // NEW: fade to white
-        LIGHTNING_STRIKE,  // NEW: lightning at camera
-        EXPLOSION,         // NEW: explosion visual
-        TIME_SET,          // NEW: set world time
-        WEATHER_SET        // NEW: change weather
+        CAMERA_SHAKE,
+        FADE_BLACK,
+        FADE_WHITE,
+        LIGHTNING_STRIKE,
+        EXPLOSION,
+        TIME_SET,
+        WEATHER_SET
     }
 
     private static class Keyframe {
@@ -399,7 +612,7 @@ public class CinematicCamera extends JavaPlugin implements Listener {
         int fadeIn  = 10;
         int stay    = 60;
         int fadeOut = 20;
-        float pitch = 1.0f; // for sounds
+        float pitch = 1.0f;
 
         Keyframe(KeyframeType type, int waypointIndex) {
             this.type = type;
@@ -450,10 +663,6 @@ public class CinematicCamera extends JavaPlugin implements Listener {
             return Math.max(10, (int)(60 / speed));
         }
 
-        /**
-         * Generate smooth camera path with ROTATION interpolation
-         * and per-segment speed zones
-         */
         List<CameraFrame> generateSmoothPath() {
             List<CameraFrame> smooth = new ArrayList<>();
             int basePoints = basePointsPerSegment();
@@ -464,7 +673,6 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                 Location p2 = waypoints.get(i + 1);
                 Location p3 = i + 2 < waypoints.size() ? waypoints.get(i + 2) : waypoints.get(i + 1);
 
-                // Check if this segment has a speed zone
                 double segmentSpeed = 1.0;
                 for (SpeedZone zone : speedZones) {
                     if (i >= zone.startWaypoint && i < zone.endWaypoint) {
@@ -479,10 +687,8 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                 for (int j = 0; j < pointsInSegment; j++) {
                     double t = (double) j / pointsInSegment;
 
-                    // Position interpolation (Catmull-Rom)
                     Location posLoc = catmullPosition(p0, p1, p2, p3, t);
 
-                    // Rotation interpolation (spherical lerp)
                     float yaw = (float)lerpAngle(p1.getYaw(), p2.getYaw(), t);
                     float pitch = (float)lerp(p1.getPitch(), p2.getPitch(), t);
 
@@ -572,9 +778,13 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                 CinematicPath path = new CinematicPath(pathName, editor.waypoints, true, speed);
                 paths.put(pathName, path);
                 editors.remove(player.getUniqueId());
+
+                // Save to config
+                savePathsToConfig();
+
                 player.sendMessage(Component.text("✓ Path '" + pathName + "' saved ("
                         + editor.waypoints.size() + " waypoints, " + String.format("%.1fx", path.speed)
-                        + ") — rotations preserved!", NamedTextColor.GREEN));
+                        + ") — rotations preserved & saved to config!", NamedTextColor.GREEN));
                 player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1f, 1f);
             }
 
@@ -605,10 +815,12 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                     player.sendMessage(Component.text("Usage: /cinematic delete <name>", NamedTextColor.RED));
                     return true;
                 }
-                if (paths.remove(args[1]) != null)
-                    player.sendMessage(Component.text("✓ Path '" + args[1] + "' deleted.", NamedTextColor.GREEN));
-                else
+                if (paths.remove(args[1]) != null) {
+                    savePathsToConfig();
+                    player.sendMessage(Component.text("✓ Path '" + args[1] + "' deleted from memory & config.", NamedTextColor.GREEN));
+                } else {
                     player.sendMessage(Component.text("Path not found!", NamedTextColor.RED));
+                }
             }
 
             case "list" -> {
@@ -644,8 +856,9 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                     return true;
                 }
                 path.speed = speed;
+                savePathsToConfig();
                 player.sendMessage(Component.text("✓ Base speed for '" + args[1] + "' → "
-                        + String.format("%.1fx", speed), NamedTextColor.GREEN));
+                        + String.format("%.1fx", speed) + " (saved to config)", NamedTextColor.GREEN));
             }
 
             case "toggle" -> {
@@ -659,8 +872,9 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                     return true;
                 }
                 path.autoPlay = !path.autoPlay;
+                savePathsToConfig();
                 player.sendMessage(Component.text("✓ Auto-play for '" + args[1] + "': "
-                        + (path.autoPlay ? "ON" : "OFF"), NamedTextColor.GREEN));
+                        + (path.autoPlay ? "ON" : "OFF") + " (saved to config)", NamedTextColor.GREEN));
             }
 
             case "clear" -> {
@@ -682,12 +896,11 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                 String[] parts = full.split("\\|", 2);
                 path.title    = parts[0].trim();
                 path.subtitle = parts.length > 1 ? parts[1].trim() : "";
-                player.sendMessage(Component.text("✓ Intro title set.", NamedTextColor.GREEN));
+                savePathsToConfig();
+                player.sendMessage(Component.text("✓ Intro title set & saved to config.", NamedTextColor.GREEN));
             }
 
-            // ── NEW: Speed zones ──────────────────────────
             case "addzone", "speedzone" -> {
-                // /cinematic addzone <path> <startWP> <endWP> <speed>
                 if (args.length < 5) {
                     player.sendMessage(Component.text("Usage: /cinematic addzone <path> <startWP> <endWP> <speed>",
                             NamedTextColor.RED));
@@ -708,8 +921,9 @@ public class CinematicCamera extends JavaPlugin implements Listener {
 
                     SpeedZone zone = new SpeedZone(start, end, zoneSpeed);
                     path.speedZones.add(zone);
+                    savePathsToConfig();
                     player.sendMessage(Component.text("✓ Speed zone added: WP " + start + "-" + end
-                            + " at " + String.format("%.1fx", zoneSpeed), NamedTextColor.GREEN));
+                            + " at " + String.format("%.1fx", zoneSpeed) + " (saved to config)", NamedTextColor.GREEN));
                 } catch (NumberFormatException e) {
                     player.sendMessage(Component.text("Invalid numbers!", NamedTextColor.RED));
                 }
@@ -751,7 +965,8 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                 try {
                     int idx = Integer.parseInt(args[2]);
                     path.speedZones.remove(idx);
-                    player.sendMessage(Component.text("✓ Speed zone " + idx + " removed.", NamedTextColor.GREEN));
+                    savePathsToConfig();
+                    player.sendMessage(Component.text("✓ Speed zone " + idx + " removed (saved to config).", NamedTextColor.GREEN));
                 } catch (Exception e) {
                     player.sendMessage(Component.text("Invalid index!", NamedTextColor.RED));
                 }
@@ -916,7 +1131,8 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                 if (kf == null) return true;
                 path.keyframes.add(kf);
                 path.keyframes.sort(Comparator.comparingInt(k -> k.waypointIndex));
-                player.sendMessage(Component.text("✓ Keyframe '" + kfTypeName + "' added at waypoint " + wpIdx + ".",
+                savePathsToConfig();
+                player.sendMessage(Component.text("✓ Keyframe '" + kfTypeName + "' added at waypoint " + wpIdx + " (saved to config).",
                         NamedTextColor.GREEN));
             }
 
@@ -959,7 +1175,8 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                 try {
                     int idx = Integer.parseInt(args[2]);
                     path.keyframes.remove(idx);
-                    player.sendMessage(Component.text("✓ Keyframe " + idx + " removed.", NamedTextColor.GREEN));
+                    savePathsToConfig();
+                    player.sendMessage(Component.text("✓ Keyframe " + idx + " removed (saved to config).", NamedTextColor.GREEN));
                 } catch (Exception e) {
                     player.sendMessage(Component.text("Invalid index.", NamedTextColor.RED));
                 }
@@ -970,8 +1187,8 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                     player.sendMessage(Component.text("No permission!", NamedTextColor.RED));
                     return true;
                 }
-                reloadConfig();
-                player.sendMessage(Component.text("✓ Plugin reloaded!", NamedTextColor.GREEN));
+                loadPathsFromConfig();
+                player.sendMessage(Component.text("✓ Reloaded " + paths.size() + " paths from config!", NamedTextColor.GREEN));
             }
 
             default -> sendHelp(player);
@@ -1075,9 +1292,10 @@ public class CinematicCamera extends JavaPlugin implements Listener {
                 .append(Component.text(" — add effect", NamedTextColor.GRAY)));
         p.sendMessage(Component.text("  /cinematic listkeyframes <n>", NamedTextColor.YELLOW)
                 .append(Component.text(" — list effects", NamedTextColor.GRAY)));
+        p.sendMessage(Component.text("  /cinematic reload", NamedTextColor.YELLOW)
+                .append(Component.text(" — reload from config", NamedTextColor.GRAY)));
         p.sendMessage(sep());
-        p.sendMessage(Component.text("  NEW: Camera rotation is preserved per waypoint!", NamedTextColor.AQUA));
-        p.sendMessage(Component.text("  NEW: Speed zones let you vary speed during playback!", NamedTextColor.AQUA));
+        p.sendMessage(Component.text("  All paths auto-save to plugins/CinematicCamera/paths.yml", NamedTextColor.AQUA));
         p.sendMessage(sep());
     }
 
