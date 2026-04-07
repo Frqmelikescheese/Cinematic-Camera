@@ -17,6 +17,32 @@ commands:
     aliases: [cam, cinema]
 
 permissions:
+  cinematic.*:
+    description: Grants all permissions for the CinematicCamera plugin
+    children:
+      cinematic.admin: true
+
   cinematic.admin:
-    description: Admin commands
+    description: Full access to create, edit, and manage cinemantic paths
+    default: op
+    children:
+      cinematic.wand: true
+      cinematic.manage: true
+      cinematic.play: true
+      cinematic.reload: true
+
+  cinematic.wand:
+    description: Allows the user to get and use the cinematic wand
+    default: op
+
+  cinematic.manage:
+    description: Allows creating, deleting, and adding keyframes to paths
+    default: op
+
+  cinematic.play:
+    description: Allows the user to play a cinematic path
+    default: op
+
+  cinematic.reload:
+    description: Allows reloading the plugin configuration
     default: op
